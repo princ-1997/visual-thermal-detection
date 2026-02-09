@@ -6,11 +6,44 @@
  */
 #include "fusion_streamer.h"
 #include "camera.h"
+#include "person_detector.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <opencv2/opencv.hpp>
 using namespace cv;
+
+/* 检测结果缓存（用于跨帧保持绘制） */
+static uint32_t g_lastDetectSeq = 0;
+static DetectResult_t g_lastDetectResult = {0};
+static int g_lastDetectCount = 0;
+/* 检测提交用 NV12 缓冲（visibleCrop BGR 转 NV12） */
+static uint8_t* g_detectNv12Buf = NULL;
+static size_t g_detectNv12Size = 0;
+
+/* BGR 上绘制检测框 */
+static void drawDetectionBoxesOnBGR(Mat& bgr, const DetectResult_t* result)
+{
+    if (!result || result->count == 0) return;
+    static const Scalar colors[] = {
+        Scalar(0, 0, 255), Scalar(255, 0, 0), Scalar(0, 255, 0), Scalar(0, 255, 255),
+        Scalar(255, 0, 255), Scalar(255, 255, 0), Scalar(0, 128, 255), Scalar(255, 128, 0)
+    };
+    const int nColors = sizeof(colors) / sizeof(colors[0]);
+    for (int i = 0; i < result->count; i++) {
+        const DetectBox_t* box = &result->boxes[i];
+        Scalar color = colors[i % nColors];
+        rectangle(bgr, Point(box->left, box->top), Point(box->right, box->bottom), color, 2);
+        char label[32];
+        snprintf(label, sizeof(label), "person %.1f%%", box->confidence * 100);
+        int baseline = 0;
+        double fontScale = 0.6;
+        int thickness = 2;
+        int textY = box->top - 5;
+        if (textY < 20) textY = box->top + 20;
+        putText(bgr, label, Point(box->left, textY), FONT_HERSHEY_SIMPLEX, fontScale, color, thickness);
+    }
+}
 
 /* ========== 配准矩阵 H (3x3) - 请手动填写 ==========
  * 将热成像坐标系映射到可见光坐标系
@@ -238,6 +271,28 @@ static void on_need_data(GstElement* appsrc, guint unused, gpointer user_data)
     Mat visibleCrop = visibleBGR(roi);
     Mat thermalCrop = thermalWarped(roi);
 
+    /* 4.5 人体检测：对 visibleCrop 异步提交，获取最新结果 */
+    if (ctx->detect_config.enabled && ctx->detect_config.model_path) {
+        size_t nv12Size = (size_t)crop_w * crop_h * 3 / 2;
+        if (g_detectNv12Size < nv12Size) {
+            free(g_detectNv12Buf);
+            g_detectNv12Buf = (uint8_t*)malloc(nv12Size);
+            g_detectNv12Size = g_detectNv12Buf ? nv12Size : 0;
+        }
+        if (g_detectNv12Buf) {
+            bgr_to_nv12(visibleCrop, g_detectNv12Buf);
+            personDetector_submitFrame(g_detectNv12Buf, crop_w, crop_h);
+            DetectResult_t res;
+            uint32_t seq = 0;
+            int cnt = personDetector_getLastResultWithSeq(&res, &seq);
+            if (seq != g_lastDetectSeq) {
+                g_lastDetectSeq = seq;
+                g_lastDetectCount = cnt;
+                if (cnt > 0) memcpy(&g_lastDetectResult, &res, sizeof(DetectResult_t));
+            }
+        }
+    }
+
     /* 5. 融合 */
     Mat fused;
     if (ctx->fusion_params.mode == FUSION_MODE_ALPHA_BLEND) {
@@ -251,7 +306,12 @@ static void on_need_data(GstElement* appsrc, guint unused, gpointer user_data)
         fuse_edge_overlay(visibleCrop, thermalCrop, fused, cl, ch);
     }
 
-    /* 5. BGR -> NV12 -> GstBuffer */
+    /* 5.5 在融合图上绘制检测框 */
+    if (ctx->detect_config.enabled && g_lastDetectCount > 0) {
+        drawDetectionBoxesOnBGR(fused, &g_lastDetectResult);
+    }
+
+    /* 6. BGR -> NV12 -> GstBuffer */
     guint nv12Size = ctx->out_width * ctx->out_height * 3 / 2;
     GstBuffer* buffer = gst_buffer_new_allocate(NULL, nv12Size, NULL);
     GstMapInfo map;
@@ -281,6 +341,23 @@ static void stream_init(gpointer user_data)
     start_ir_stream(ctx);
     ctx->stream_started = TRUE;
     ctx->timestamp = 0;
+    /* 人体检测初始化 */
+    if (ctx->detect_config.enabled && ctx->detect_config.model_path) {
+        DetectorConfig_t dcfg;
+        memset(&dcfg, 0, sizeof(dcfg));
+        dcfg.modelPath = ctx->detect_config.model_path;
+        dcfg.detectFps = ctx->detect_config.detect_fps > 0 ? ctx->detect_config.detect_fps : 3;
+        dcfg.imageWidth = ctx->out_width;
+        dcfg.imageHeight = ctx->out_height;
+        dcfg.confidenceThreshold = ctx->detect_config.confidence_threshold > 0 ? ctx->detect_config.confidence_threshold : 0.4f;
+        dcfg.callback = NULL;
+        dcfg.callbackUserData = NULL;
+        if (personDetector_init(&dcfg) == 0) {
+            personDetector_setSourceFps(ctx->framerate);
+        } else {
+            printf("[Fusion] person detector init failed, detection disabled\n");
+        }
+    }
     printf("[Fusion] stream initialized\n");
 }
 
@@ -288,6 +365,12 @@ static void stream_uninit(gpointer user_data)
 {
     FusionStreamerCtx_t* ctx = (FusionStreamerCtx_t*)user_data;
     if (!ctx || !ctx->stream_started) return;
+    if (ctx->detect_config.enabled) {
+        personDetector_release();
+    }
+    free(g_detectNv12Buf);
+    g_detectNv12Buf = NULL;
+    g_detectNv12Size = 0;
     stop_ir_stream(ctx);
     mipicamera_exit(ctx->visible_cam_index);
     ctx->stream_started = FALSE;
@@ -380,6 +463,11 @@ int fusion_streamer_init(FusionStreamerCtx_t* ctx,
     ctx->fusion_params.canny_low = 50;
     ctx->fusion_params.canny_high = 150;
 
+    ctx->detect_config.enabled = FALSE;
+    ctx->detect_config.model_path = NULL;
+    ctx->detect_config.detect_fps = 3;
+    ctx->detect_config.confidence_threshold = 0.4f;
+
     printf("[Fusion] init ok: thermal=%dx%d, visible=%dx%d, fps=%d\n",
            thermal_w, thermal_h, visible_w, visible_h, fps);
     return 0;
@@ -389,6 +477,13 @@ void fusion_streamer_set_params(FusionStreamerCtx_t* ctx, const FusionParams_t* 
 {
     if (ctx && params) {
         memcpy(&ctx->fusion_params, params, sizeof(FusionParams_t));
+    }
+}
+
+void fusion_streamer_set_detect_config(FusionStreamerCtx_t* ctx, const DetectConfig_t* config)
+{
+    if (ctx && config) {
+        memcpy(&ctx->detect_config, config, sizeof(DetectConfig_t));
     }
 }
 
@@ -424,6 +519,12 @@ int fusion_streamer_run(FusionStreamerCtx_t* ctx, const char* port, const char* 
 void fusion_streamer_cleanup(FusionStreamerCtx_t* ctx)
 {
     if (!ctx) return;
+    if (ctx->detect_config.enabled) {
+        personDetector_release();
+    }
+    free(g_detectNv12Buf);
+    g_detectNv12Buf = NULL;
+    g_detectNv12Size = 0;
     if (ctx->stream_started) {
         stop_ir_stream(ctx);
         mipicamera_exit(ctx->visible_cam_index);

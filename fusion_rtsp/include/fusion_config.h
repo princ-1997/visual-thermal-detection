@@ -4,6 +4,8 @@
 #ifndef __FUSION_CONFIG_H__
 #define __FUSION_CONFIG_H__
 
+#include <glib.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,6 +23,17 @@ typedef struct {
     int canny_low;         /* Canny 边缘检测低阈值 */
     int canny_high;        /* Canny 边缘检测高阈值 */
 } FusionParams_t;
+
+/* 人体检测模型默认路径（build.sh 会将 fusion_rtsp/person_detect.model 复制到 Release）*/
+#define DEFAULT_DETECT_MODEL "./person_detect.model"
+
+/* 人体检测配置 */
+typedef struct {
+    gboolean enabled;           /* 是否启用检测 */
+    const char* model_path;     /* 模型文件路径 */
+    int detect_fps;            /* 检测帧率 (1-30) */
+    float confidence_threshold;/* 置信度阈值 (0~1) */
+} DetectConfig_t;
 
 #ifdef __cplusplus
 }

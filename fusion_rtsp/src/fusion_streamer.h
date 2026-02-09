@@ -51,6 +51,9 @@ typedef struct {
     /* ===  fusion 参数 === */
     FusionParams_t    fusion_params;
 
+    /* === 人体检测 === */
+    DetectConfig_t    detect_config;
+
     /* === 输出 === */
     int               out_width;
     int               out_height;
@@ -90,6 +93,11 @@ int fusion_streamer_init(FusionStreamerCtx_t* ctx,
  * 设置融合参数
  */
 void fusion_streamer_set_params(FusionStreamerCtx_t* ctx, const FusionParams_t* params);
+
+/**
+ * 设置人体检测配置（需在 stream_init 前调用）
+ */
+void fusion_streamer_set_detect_config(FusionStreamerCtx_t* ctx, const DetectConfig_t* config);
 
 /**
  * Snap：串行拍照并保存可见光、热成像

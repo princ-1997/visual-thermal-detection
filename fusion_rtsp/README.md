@@ -34,6 +34,9 @@
 | `-H <height>` | 可见光高度 | 1080 |
 | `-f <fps>` | 双摄像头帧率 | 10 |
 | `-c <file>` | 融合配置文件（mode、alpha、canny） | - |
+| `-d` | 启用人体检测（在融合图上绘制检测框） | 关闭 |
+| `-m <path>` | 人体检测模型路径（相对当前工作目录） | ./person_detect.model（build 时从 fusion_rtsp/ 复制） |
+| `-D <fps>` | 检测帧率 (1-30) | 3 |
 | `-h` | 帮助 | - |
 
 ### 融合模式
@@ -57,6 +60,11 @@
 
 # 播放地址
 # rtsp://<板子IP>:8554/fusion
+
+# 启用人体检测（person_detect.model 位于 fusion_rtsp/，build 时复制到 Release，建议从 Release 目录运行）
+./fusion_rtsp stream_RV1126.conf -p 8554 -u /fusion -d
+# -D 3 表示把人体检测的帧率设置为 3（每秒检测 3 帧）
+./fusion_rtsp stream_RV1126.conf -d -m ./person_detect.model -D 3
 ```
 
 ---

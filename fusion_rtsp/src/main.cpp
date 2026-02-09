@@ -60,6 +60,9 @@ static void print_usage(const char* prog)
     printf("  -f <fps>      Frame rate for both cameras (default: %d)\n", DEFAULT_FPS);
     printf("  -c <file>     Fusion config (mode, alpha, canny thresholds)\n");
     printf("                mode: alpha_blend | edge_overlay, alpha: 0~1\n");
+    printf("  -d            Enable person detection\n");
+    printf("  -m <path>     Person detect model path (default: %s)\n", DEFAULT_DETECT_MODEL);
+    printf("  -D <fps>     Detection fps (default: 3)\n");
     printf("  -h            Show help\n");
     printf("\nAlpha 叠加示例: %s stream_RV1126.conf -c fusion_alpha.conf -v 23\n", prog);
     printf("拍照请使用:    fusion_snap stream_RV1126.conf -o ./snap\n", prog);
@@ -114,6 +117,9 @@ int main(int argc, char* argv[])
     const char* rtsp_port   = DEFAULT_RTSP_PORT;
     const char* url_path    = DEFAULT_URL_PATH;
     const char* fusion_conf = NULL;
+    const char* detect_model = DEFAULT_DETECT_MODEL;
+    int detect_fps = 3;
+    bool detect_enabled = false;
     int visible_cam = DEFAULT_VISIBLE_CAM;
     int visible_w   = DEFAULT_VISIBLE_W;
     int visible_h   = DEFAULT_VISIBLE_H;
@@ -134,7 +140,7 @@ int main(int argc, char* argv[])
 
     int opt;
     optind = 2;
-    while ((opt = getopt(argc, argv, "p:u:v:W:H:f:c:h")) != -1) {
+    while ((opt = getopt(argc, argv, "p:u:v:W:H:f:c:dm:D:h")) != -1) {
         switch (opt) {
         case 'p': rtsp_port = optarg; break;
         case 'u': url_path  = optarg; break;
@@ -143,6 +149,9 @@ int main(int argc, char* argv[])
         case 'H': visible_h = atoi(optarg); break;
         case 'f': fps = atoi(optarg); break;
         case 'c': fusion_conf = optarg; break;
+        case 'd': detect_enabled = true; break;
+        case 'm': detect_model = optarg; break;
+        case 'D': detect_fps = atoi(optarg); break;
         case 'h':
         default:
             print_usage(argv[0]);
@@ -155,6 +164,7 @@ int main(int argc, char* argv[])
     printf("  Thermal config: %s\n", thermal_config);
     printf("  Visible: /dev/video%d %dx%d @ %dfps\n", visible_cam, visible_w, visible_h, fps);
     printf("  Port: %s, URL: %s\n", rtsp_port, url_path);
+    if (detect_enabled) printf("  Detect: enabled, model=%s, fps=%d\n", detect_model, detect_fps);
     printf("========================================\n");
 
     signal(SIGINT,  signal_handler);
@@ -320,6 +330,15 @@ int main(int argc, char* argv[])
             fusion_streamer_set_params(&fusion_ctx, &fp);
             printf("[Main] loaded fusion params from %s\n", fusion_conf);
         }
+    }
+
+    if (detect_enabled) {
+        DetectConfig_t dcfg;
+        dcfg.enabled = TRUE;
+        dcfg.model_path = detect_model;
+        dcfg.detect_fps = (detect_fps > 0 && detect_fps <= 30) ? detect_fps : 3;
+        dcfg.confidence_threshold = 0.4f;
+        fusion_streamer_set_detect_config(&fusion_ctx, &dcfg);
     }
 
     printf("[Main] starting fusion RTSP server...\n");

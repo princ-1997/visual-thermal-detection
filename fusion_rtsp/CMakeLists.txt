@@ -40,19 +40,22 @@ endif()
 set(toolkit_root ${EASYEAI_API_DIR})
 set(common_root ${toolkit_root}/common)
 set(media_root  ${toolkit_root}/media)
+set(algorithm_root ${toolkit_root}/algorithm)
 
 include(${common_root}/system_opt/api.cmake)
 include(${media_root}/gst_opt/api.cmake)
+include(${algorithm_root}/person_detect/api.cmake)
 
 set(api_inc
     ${SYSOPT_INCLUDE_DIRS}
     ${GSTOPT_INCLUDE_DIRS}
     ${CODEC_INCLUDE_DIRS}
     ${RTSP_INCLUDE_DIRS}
+    ${PERSON_DETECT_INCLUDE_DIRS}
 )
 file(GLOB api_srcs ${SYSOPT_SOURCE_DIRS})
-link_directories(${GSTOPT_LIBS_DIRS} ${CODEC_LIBS_DIRS} ${RTSP_LIBS_DIRS})
-set(sysLib_list ${SYSOPT_LIBS} ${GSTOPT_LIBS} ${CODEC_LIBS} ${RTSP_LIBS})
+link_directories(${GSTOPT_LIBS_DIRS} ${CODEC_LIBS_DIRS} ${RTSP_LIBS_DIRS} ${PERSON_DETECT_LIBS_DIRS})
+set(sysLib_list ${SYSOPT_LIBS} ${GSTOPT_LIBS} ${CODEC_LIBS} ${RTSP_LIBS} ${PERSON_DETECT_LIBS})
 
 # ======================== IR SDK (复用 thermal_rtsp) =========================
 set(ir_sdk_srcs
@@ -89,6 +92,7 @@ set(custom_libs m rga ${OpenCV_LIBS})
 
 set(shared_srcs
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_streamer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/person_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/camera/mipi_camera.c
 )
 

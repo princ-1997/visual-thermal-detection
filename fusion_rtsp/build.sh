@@ -69,6 +69,11 @@ fi
 if [ -f "../fusion_alpha.conf" ]; then
     cp "../fusion_alpha.conf" "../Release"
 fi
+# 人体检测模型（启用 -d 时需此文件）- 从 fusion_rtsp 目录加载
+if [ -f "../person_detect.model" ]; then
+    cp "../person_detect.model" "../Release"
+    echo "Model: fusion_rtsp/person_detect.model -> Release/"
+fi
 # IR SDK .so：优先用 IR_SDK_LIBS_DIR，否则用 thermal_rtsp/libs
 LIBS_SRC="${IR_SDK_LIBS_DIR:-../../thermal_rtsp/libs}"
 cp $LIBS_SRC/*.so "../Release" 2>/dev/null || true
@@ -80,5 +85,6 @@ if [ -n "$SYSROOT" ]; then
     ldconfig $SYSROOT 2>/dev/null || true
     cp ../Release/$PROJECT_NAME ../Release/fusion_snap $SYSROOT/userdata/Solu/
     cp ../Release/*.conf $SYSROOT/userdata/Solu/ 2>/dev/null || true
+    cp ../Release/person_detect.model $SYSROOT/userdata/Solu/ 2>/dev/null || true
 fi
 exit 0
