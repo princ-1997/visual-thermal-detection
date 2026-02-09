@@ -184,10 +184,13 @@ static void fuse_edge_overlay(const Mat& visible, const Mat& thermalWarped,
 Mat& out, int cannyLow, int cannyHigh)
 {
     visible.copyTo(out);
-Mat thermalGray;
-cvtColor(thermalWarped, thermalGray, COLOR_BGR2GRAY);
-Mat edges;
-Canny(thermalGray, edges, cannyLow, cannyHigh);
+    Mat thermalGray;
+    cvtColor(thermalWarped, thermalGray, COLOR_BGR2GRAY);
+    /* 高斯模糊：平滑梯度、抑制噪声，减少多重平行边缘重影 */
+    Mat blurred;
+    GaussianBlur(thermalGray, blurred, Size(5, 5), 1.4);
+    Mat edges;
+    Canny(blurred, edges, cannyLow, cannyHigh);
     /* 红色边缘叠加 */
     out.setTo(Scalar(0, 0, 255), edges);
 }
