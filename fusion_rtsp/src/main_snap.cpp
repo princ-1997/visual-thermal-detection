@@ -23,7 +23,7 @@ IrVideoHandle_t* ir_image_video_handle = NULL;
 #define DEFAULT_VISIBLE_CAM  23
 #define DEFAULT_VISIBLE_W   1920
 #define DEFAULT_VISIBLE_H   1080
-#define DEFAULT_FPS         30
+#define DEFAULT_FPS         10
 
 static void print_usage(const char* prog)
 {

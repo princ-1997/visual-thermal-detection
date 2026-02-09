@@ -35,9 +35,9 @@ IrVideoHandle_t* ir_temp_video_handle  = NULL;
 #define DEFAULT_RTSP_PORT    "8554"
 #define DEFAULT_URL_PATH     "/fusion"
 #define DEFAULT_VISIBLE_CAM  23
-#define DEFAULT_VISIBLE_W   1920
-#define DEFAULT_VISIBLE_H   1080
-#define DEFAULT_FPS         30
+#define DEFAULT_VISIBLE_W    1920
+#define DEFAULT_VISIBLE_H    1080
+#define DEFAULT_FPS         10     /* 双摄像头帧率，降低卡顿 */
 
 static GMainLoop* g_loop = NULL;
 
@@ -57,6 +57,7 @@ static void print_usage(const char* prog)
     printf("  -v <index>    Visible camera index, e.g. 23 for /dev/video23 (default: %d)\n", DEFAULT_VISIBLE_CAM);
     printf("  -W <width>    Visible width (default: %d)\n", DEFAULT_VISIBLE_W);
     printf("  -H <height>   Visible height (default: %d)\n", DEFAULT_VISIBLE_H);
+    printf("  -f <fps>      Frame rate for both cameras (default: %d)\n", DEFAULT_FPS);
     printf("  -c <file>     Fusion config (mode, alpha, canny thresholds)\n");
     printf("                mode: alpha_blend | edge_overlay, alpha: 0~1\n");
     printf("  -h            Show help\n");
@@ -116,6 +117,7 @@ int main(int argc, char* argv[])
     int visible_cam = DEFAULT_VISIBLE_CAM;
     int visible_w   = DEFAULT_VISIBLE_W;
     int visible_h   = DEFAULT_VISIBLE_H;
+    int fps         = DEFAULT_FPS;
     int ret = 0;
     bool is_v4l2 = false;
     void* driver_handle = NULL;
@@ -132,13 +134,14 @@ int main(int argc, char* argv[])
 
     int opt;
     optind = 2;
-    while ((opt = getopt(argc, argv, "p:u:v:W:H:c:h")) != -1) {
+    while ((opt = getopt(argc, argv, "p:u:v:W:H:f:c:h")) != -1) {
         switch (opt) {
         case 'p': rtsp_port = optarg; break;
         case 'u': url_path  = optarg; break;
         case 'v': visible_cam = atoi(optarg); break;
         case 'W': visible_w = atoi(optarg); break;
         case 'H': visible_h = atoi(optarg); break;
+        case 'f': fps = atoi(optarg); break;
         case 'c': fusion_conf = optarg; break;
         case 'h':
         default:
@@ -150,7 +153,7 @@ int main(int argc, char* argv[])
     printf("========================================\n");
     printf("  Thermal+Visible Fusion RTSP Server\n");
     printf("  Thermal config: %s\n", thermal_config);
-    printf("  Visible: /dev/video%d %dx%d\n", visible_cam, visible_w, visible_h);
+    printf("  Visible: /dev/video%d %dx%d @ %dfps\n", visible_cam, visible_w, visible_h, fps);
     printf("  Port: %s, URL: %s\n", rtsp_port, url_path);
     printf("========================================\n");
 
@@ -197,7 +200,7 @@ int main(int argc, char* argv[])
         memset(&cam_params, 0, sizeof(CamDevParams_t));
         cam_params.width  = product_config.camera.v4l2_config.image_stream.dev_width;
         cam_params.height = product_config.camera.v4l2_config.image_stream.dev_height;
-        cam_params.fps    = product_config.camera.v4l2_config.image_stream.fps;
+        cam_params.fps    = fps;   /* 可配置帧率 */
         cam_params.format = 0;
         ret = irv4l2_camera_init(v4l2_handle, &cam_params);
         if (ret != 0) {
@@ -300,7 +303,7 @@ int main(int argc, char* argv[])
                               raw_size, image_size,
                               frame_ratio,
                               visible_cam, visible_w, visible_h,
-                              stream_fps < DEFAULT_FPS ? stream_fps : DEFAULT_FPS,
+                              fps,
                               is_v4l2 ? TRUE : FALSE);
     if (ret != 0) {
         printf("[Main] ERROR: fusion_streamer_init failed\n");

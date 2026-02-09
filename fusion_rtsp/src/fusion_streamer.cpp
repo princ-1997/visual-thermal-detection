@@ -15,13 +15,15 @@ using namespace cv;
 /* ========== 配准矩阵 H (3x3) - 请手动填写 ==========
  * 将热成像坐标系映射到可见光坐标系
  * 可通过标定工具获取，或根据特征点计算
- * 单位矩阵表示无变换（仅用于测试）
+ * H 标定时的可见光分辨率（若与当前不同则自动缩放）
  */
 static double g_homography_H[3][3] = {
     { 1.81519250e+00, -6.03496110e-01,  8.52525363e+02},
     { 5.28769420e-01,  5.05579479e-01,  5.18922777e+02},
     { 8.80582379e-04, -6.93669550e-04,  1.00000000e+00}
 };
+static const int H_CALIB_W = 1920;
+static const int H_CALIB_H = 1080;
 
 /* ======================== IR 视频流启停 ======================== */
 
@@ -209,28 +211,41 @@ static void on_need_data(GstElement* appsrc, guint unused, gpointer user_data)
     }
 
     /* 2. 转 BGR */
-Mat thermalBGR = thermal_to_bgr(ctx);
-Mat visibleBGR = nv12_to_bgr(ctx->visible_buffer, ctx->visible_width, ctx->visible_height);
+    Mat thermalBGR = thermal_to_bgr(ctx);
+    Mat visibleBGR = nv12_to_bgr(ctx->visible_buffer, ctx->visible_width, ctx->visible_height);
 
-    /* 3. 配准：warpPerspective(thermal -> visible 坐标系) */
-Mat H = (Mat_<double>(3, 3) <<
-        g_homography_H[0][0], g_homography_H[0][1], g_homography_H[0][2],
-        g_homography_H[1][0], g_homography_H[1][1], g_homography_H[1][2],
-        g_homography_H[2][0], g_homography_H[2][1], g_homography_H[2][2]);
-Mat thermalWarped;
-warpPerspective(thermalBGR, thermalWarped, H, Size(ctx->visible_width, ctx->visible_height));
+    /* 3. 配准：warpPerspective(thermal -> visible 坐标系)
+     * 若当前可见光分辨率与标定不同，则缩放 H */
+    double sx = (double)ctx->visible_width / H_CALIB_W;
+    double sy = (double)ctx->visible_height / H_CALIB_H;
+    Mat H = (Mat_<double>(3, 3) <<
+        g_homography_H[0][0] * sx, g_homography_H[0][1] * sx, g_homography_H[0][2] * sx,
+        g_homography_H[1][0] * sy, g_homography_H[1][1] * sy, g_homography_H[1][2] * sy,
+        g_homography_H[2][0],      g_homography_H[2][1],      g_homography_H[2][2]);
+    Mat thermalWarped;
+    warpPerspective(thermalBGR, thermalWarped, H, Size(ctx->visible_width, ctx->visible_height));
 
-    /* 4. 融合 */
-Mat fused;
+    /* 4. 裁剪可见光为中心 1/9 区域（3x3 等分取第 2 行第 2 列）
+     * 输出尺寸需对齐 16 以满足 RV1126 MPP H.264 编码器要求 */
+    int crop_w = ctx->out_width;
+    int crop_h = ctx->out_height;
+    int crop_x = (ctx->visible_width - crop_w) / 2;
+    int crop_y = (ctx->visible_height - crop_h) / 2;
+    Rect roi(crop_x, crop_y, crop_w, crop_h);
+    Mat visibleCrop = visibleBGR(roi);
+    Mat thermalCrop = thermalWarped(roi);
+
+    /* 5. 融合 */
+    Mat fused;
     if (ctx->fusion_params.mode == FUSION_MODE_ALPHA_BLEND) {
         float a = ctx->fusion_params.alpha;
         if (a < 0) a = 0;
         if (a > 1) a = 1;
-addWeighted(visibleBGR, 1.0f - a, thermalWarped, a, 0, fused);
+        addWeighted(visibleCrop, 1.0f - a, thermalCrop, a, 0, fused);
     } else {
         int cl = ctx->fusion_params.canny_low  > 0 ? ctx->fusion_params.canny_low  : 50;
         int ch = ctx->fusion_params.canny_high > 0 ? ctx->fusion_params.canny_high : 150;
-        fuse_edge_overlay(visibleBGR, thermalWarped, fused, cl, ch);
+        fuse_edge_overlay(visibleCrop, thermalCrop, fused, cl, ch);
     }
 
     /* 5. BGR -> NV12 -> GstBuffer */
@@ -338,8 +353,9 @@ int fusion_streamer_init(FusionStreamerCtx_t* ctx,
     ctx->visible_cam_index = visible_cam_idx;
     ctx->visible_width     = visible_w;
     ctx->visible_height    = visible_h;
-    ctx->out_width         = visible_w;
-    ctx->out_height        = visible_h;
+    /* 中心 1/9 区域，向上对齐 16 以满足 MPP H.264 编码器，并确保包含热成像中心 */
+    ctx->out_width         = ((visible_w / 3) + 15) & ~15;
+    ctx->out_height        = ((visible_h / 3) + 15) & ~15;
     ctx->framerate         = fps;
     ctx->is_v4l2           = is_v4l2;
 
