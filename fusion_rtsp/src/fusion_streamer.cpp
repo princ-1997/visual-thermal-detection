@@ -51,12 +51,67 @@ static void drawDetectionBoxesOnBGR(Mat& bgr, const DetectResult_t* result)
  * H 标定时的可见光分辨率（若与当前不同则自动缩放）
  */
 static double g_homography_H[3][3] = {
-    { 1.81519250e+00, -6.03496110e-01,  8.52525363e+02},
-    { 5.28769420e-01,  5.05579479e-01,  5.18922777e+02},
-    { 8.80582379e-04, -6.93669550e-04,  1.00000000e+00}
+    { 5.91182905e-01,  5.71124538e-01,  8.82142738e+02},
+    {-1.75684254e-01,  1.23285882e+00,  5.41628838e+02},
+    {-2.69454378e-04,  5.66310896e-04,  1.00000000e+00}
 };
 static const int H_CALIB_W = 1920;
 static const int H_CALIB_H = 1080;
+
+/* 计算自适应裁剪区域：根据热红外在可见光中的位置计算裁剪框
+ * 裁剪框尺寸为热红外的 sqrt(2) 倍，以热红外中心为中心 */
+static Rect calculate_adaptive_crop_region(int thermal_w, int thermal_h, 
+                                           int visible_w, int visible_h,
+                                           const Mat& H)
+{
+    /* 计算热红外四角在可见光坐标系中的位置 */
+    std::vector<Point2f> thermalCorners = {
+        Point2f(0, 0),
+        Point2f(thermal_w - 1, 0),
+        Point2f(thermal_w - 1, thermal_h - 1),
+        Point2f(0, thermal_h - 1)
+    };
+    std::vector<Point2f> thermalCornersWarped;
+    perspectiveTransform(thermalCorners, thermalCornersWarped, H);
+    
+    /* 计算包围框 */
+    float minX = visible_w, maxX = 0, minY = visible_h, maxY = 0;
+    for (const auto& pt : thermalCornersWarped) {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.y < minY) minY = pt.y;
+        if (pt.y > maxY) maxY = pt.y;
+    }
+    
+    /* 热红外的最大宽高 */
+    int thermal_w_in_visible = (int)(maxX - minX);
+    int thermal_h_in_visible = (int)(maxY - minY);
+    
+    /* 以热红外中心为中心，向外扩展到 sqrt(2) 倍 */
+    int thermal_center_x = (int)((minX + maxX) / 2);
+    int thermal_center_y = (int)((minY + maxY) / 2);
+    const float SQRT2 = 1.414213562f;
+    int crop_w = (int)(thermal_w_in_visible * SQRT2);
+    int crop_h = (int)(thermal_h_in_visible * SQRT2);
+    
+    /* 对齐到 16 以满足 RV1126 MPP H.264 编码器要求 */
+    crop_w = (crop_w + 15) & ~15;
+    crop_h = (crop_h + 15) & ~15;
+    
+    /* 确定裁剪起始点（以中心扩展） */
+    int crop_x = thermal_center_x - crop_w / 2;
+    int crop_y = thermal_center_y - crop_h / 2;
+    
+    /* 边界检查和调整 */
+    if (crop_x < 0) crop_x = 0;
+    if (crop_y < 0) crop_y = 0;
+    if (crop_x + crop_w > visible_w) crop_x = visible_w - crop_w;
+    if (crop_y + crop_h > visible_h) crop_y = visible_h - crop_h;
+    if (crop_w > visible_w) crop_w = visible_w;
+    if (crop_h > visible_h) crop_h = visible_h;
+    
+    return Rect(crop_x, crop_y, crop_w, crop_h);
+}
 
 /* ======================== IR 视频流启停 ======================== */
 
@@ -216,7 +271,10 @@ int fusion_streamer_snap(FusionStreamerCtx_t* ctx, const char* visible_path, con
 static void fuse_edge_overlay(const Mat& visible, const Mat& thermalWarped,
 Mat& out, int cannyLow, int cannyHigh)
 {
-    visible.copyTo(out);
+    /* 1. 先进行0.6参数的alpha_blend */
+    addWeighted(visible, 0.4f, thermalWarped, 0.6f, 0, out);
+    
+    /* 2. 再叠加热成像的边缘检测结果 */
     Mat thermalGray;
     cvtColor(thermalWarped, thermalGray, COLOR_BGR2GRAY);
     /* 高斯模糊：平滑梯度、抑制噪声，减少多重平行边缘重影 */
@@ -261,19 +319,25 @@ static void on_need_data(GstElement* appsrc, guint unused, gpointer user_data)
     Mat thermalWarped;
     warpPerspective(thermalBGR, thermalWarped, H, Size(ctx->visible_width, ctx->visible_height));
 
-    /* 4. 裁剪可见光为中心 1/9 区域（3x3 等分取第 2 行第 2 列）
-     * 输出尺寸需对齐 16 以满足 RV1126 MPP H.264 编码器要求 */
-    int crop_w = ctx->out_width;
-    int crop_h = ctx->out_height;
-    int crop_x = (ctx->visible_width - crop_w) / 2;
-    int crop_y = (ctx->visible_height - crop_h) / 2;
-    Rect roi(crop_x, crop_y, crop_w, crop_h);
+    /* 4. 自适应裁剪可见光：使用预先计算好的裁剪区域（在init时已计算） */
+    Rect roi = calculate_adaptive_crop_region(ctx->thermal_width, ctx->thermal_height,
+                                              ctx->visible_width, ctx->visible_height, H);
     Mat visibleCrop = visibleBGR(roi);
     Mat thermalCrop = thermalWarped(roi);
-
+    
+    /* 计算热红外四角在裁剪后的局部坐标系中的位置（用于绘制边框） */
+    std::vector<Point2f> thermalCorners = {
+        Point2f(0, 0),
+        Point2f(ctx->thermal_width - 1, 0),
+        Point2f(ctx->thermal_width - 1, ctx->thermal_height - 1),
+        Point2f(0, ctx->thermal_height - 1)
+    };
+    std::vector<Point2f> thermalCornersWarped;
+    perspectiveTransform(thermalCorners, thermalCornersWarped, H);
+    
     /* 4.5 人体检测：对 visibleCrop 异步提交，获取最新结果 */
     if (ctx->detect_config.enabled && ctx->detect_config.model_path) {
-        size_t nv12Size = (size_t)crop_w * crop_h * 3 / 2;
+        size_t nv12Size = (size_t)ctx->out_width * ctx->out_height * 3 / 2;
         if (g_detectNv12Size < nv12Size) {
             free(g_detectNv12Buf);
             g_detectNv12Buf = (uint8_t*)malloc(nv12Size);
@@ -281,7 +345,7 @@ static void on_need_data(GstElement* appsrc, guint unused, gpointer user_data)
         }
         if (g_detectNv12Buf) {
             bgr_to_nv12(visibleCrop, g_detectNv12Buf);
-            personDetector_submitFrame(g_detectNv12Buf, crop_w, crop_h);
+            personDetector_submitFrame(g_detectNv12Buf, ctx->out_width, ctx->out_height);
             DetectResult_t res;
             uint32_t seq = 0;
             int cnt = personDetector_getLastResultWithSeq(&res, &seq);
@@ -304,6 +368,21 @@ static void on_need_data(GstElement* appsrc, guint unused, gpointer user_data)
         int cl = ctx->fusion_params.canny_low  > 0 ? ctx->fusion_params.canny_low  : 50;
         int ch = ctx->fusion_params.canny_high > 0 ? ctx->fusion_params.canny_high : 150;
         fuse_edge_overlay(visibleCrop, thermalCrop, fused, cl, ch);
+    }
+    
+    /* 5.1 给热红外画面增加红色边框以突出显示 */
+    std::vector<Point> thermalCornersLocal;
+    for (const auto& pt : thermalCornersWarped) {
+        /* 将可见光全局坐标转换为裁剪后的局部坐标 */
+        int localX = (int)pt.x - roi.x;
+        int localY = (int)pt.y - roi.y;
+        thermalCornersLocal.push_back(Point(localX, localY));
+    }
+    /* 绘制热红外边框四条边 */
+    for (size_t i = 0; i < thermalCornersLocal.size(); i++) {
+        Point p1 = thermalCornersLocal[i];
+        Point p2 = thermalCornersLocal[(i + 1) % thermalCornersLocal.size()];
+        line(fused, p1, p2, Scalar(0, 0, 255), 3);
     }
 
     /* 5.5 在融合图上绘制检测框 */
@@ -439,11 +518,19 @@ int fusion_streamer_init(FusionStreamerCtx_t* ctx,
     ctx->visible_cam_index = visible_cam_idx;
     ctx->visible_width     = visible_w;
     ctx->visible_height    = visible_h;
-    /* 中心 1/9 区域，向上对齐 16 以满足 MPP H.264 编码器，并确保包含热成像中心 */
-    ctx->out_width         = ((visible_w / 3) + 15) & ~15;
-    ctx->out_height        = ((visible_h / 3) + 15) & ~15;
     ctx->framerate         = fps;
     ctx->is_v4l2           = is_v4l2;
+    
+    /* 根据单应性矩阵H计算自适应裁剪区域，确定输出尺寸 */
+    double sx = (double)visible_w / H_CALIB_W;
+    double sy = (double)visible_h / H_CALIB_H;
+    Mat H = (Mat_<double>(3, 3) <<
+        g_homography_H[0][0] * sx, g_homography_H[0][1] * sx, g_homography_H[0][2] * sx,
+        g_homography_H[1][0] * sy, g_homography_H[1][1] * sy, g_homography_H[1][2] * sy,
+        g_homography_H[2][0],      g_homography_H[2][1],      g_homography_H[2][2]);
+    Rect cropRegion = calculate_adaptive_crop_region(thermal_w, thermal_h, visible_w, visible_h, H);
+    ctx->out_width  = cropRegion.width;
+    ctx->out_height = cropRegion.height;
 
     ctx->thermal_raw_buffer = (uint8_t*)malloc(thermal_raw_size);
     if (!ctx->thermal_raw_buffer) {

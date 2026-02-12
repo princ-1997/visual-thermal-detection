@@ -15,6 +15,7 @@
 #include "libiri2c.h"
 #include "libiruart.h"
 #include <getopt.h>
+#include <unistd.h>
 #include <cstdio>
 #include <cstring>
 
@@ -225,6 +226,10 @@ int main(int argc, char* argv[])
     char thermal_path[256];
     snprintf(visible_path, sizeof(visible_path), "%s/visible.jpg", out_dir);
     snprintf(thermal_path, sizeof(thermal_path), "%s/thermal.jpg", out_dir);
+
+    printf("[Snap] 等待 10 秒后开始拍照...\n");
+    sleep(10);
+
     ret = fusion_streamer_snap(&fusion_ctx, visible_path, thermal_path);
     printf("[Snap] %s\n", ret == 0 ? "ok" : "failed");
 
